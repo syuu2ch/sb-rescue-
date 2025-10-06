@@ -46,53 +46,105 @@ hr{border:none;border-top:1px solid var(--border);margin:12px 0}
 </style>
 """, unsafe_allow_html=True)
 
-def ris_says(msg: str, tone: str="default"):
-    cls = "bubble"
-    if tone=="ok": cls += " ok"
-    elif tone=="warn": cls += " warn"
-    elif tone=="err": cls += " err"
+# --- STYLE: リスくん（打合せ版） ---
+st.markdown("""
+<style>
+:root{
+  --nut:#8B5E3C; --nut-light:#C49A6C; --border:#E7D8C9; --ok:#EFFFF6; --warn:#FFF6E6; --err:#FFECEC; --txt:#2b2b2b;
+}
+.block-container{padding-top:10px;padding-bottom:24px}
+.ris-wrap{position:fixed; right:18px; bottom:18px; z-index:9999;}
+.ris-icon{
+  width:48px;height:48px;border-radius:50%;
+  background: radial-gradient(circle, var(--nut) 0%, var(--nut-light) 85%);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;
+  box-shadow:0 8px 20px rgba(139,94,60,.35); animation:breath 3s ease-in-out infinite;
+}
+@keyframes breath{0%{transform:scale(1)}50%{transform:scale(1.04)}100%{transform:scale(1)}}
+.ris-bubble{
+  max-width:520px; background:#fff; border:1px solid var(--border); border-radius:16px;
+  box-shadow:0 10px 30px rgba(0,0,0,.08);
+  margin-top:8px; padding:10px 14px; color:var(--txt); animation:fade .25s ease;
+}
+.ris-bubble.ok{background:var(--ok)} .ris-bubble.warn{background:var(--warn)} .ris-bubble.err{background:var(--err)}
+@keyframes fade{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
+</style>
+<div class="ris-wrap" id="ris-root"></div>
+""", unsafe_allow_html=True)
+
+RIS_ICON_HTML = "🐿️"
+
+def ris_says(msg: str, tone: str=""):
+    tone_cls = {"ok":" ok", "warn":" warn", "err":" err"}.get(tone, "")
     st.markdown(f"""
-    <div class="ris-row">
-      <div class="ris-icon">💬</div>
-      <div class="{cls}">{msg}</div>
+    <div class="ris-wrap">
+      <div class="ris-icon">{RIS_ICON_HTML}</div>
+      <div class="ris-bubble{tone_cls}">{msg}</div>
     </div>
-    """, unsafe_allow_html=True)
+    """, unsaf
+
 
 # ====== 取得・解析 ======
 import requests
 from bs4 import BeautifulSoup
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (SB-Rescue/1.0)"}
-PRICE_PAT = re.compile(r"(\d{3,5})\s*円")
+# --- PRICE PARSER 改良版 ---
+import re
+from bs4 import BeautifulSoup
 
-KEYWORDS_BY_GENRE = {
-    "フェイシャル": ["フェイシャル","小顔","毛穴","美肌","顔"],
-    "痩身": ["痩身","スリム","リンパ","デトックス","ボディ"],
-    "脱毛": ["脱毛"],
-    "ブライダル": ["ブライダル","花嫁"],
-    "バストケア": ["バスト","胸"],
-    "シェービング": ["シェービング","顔そり","ブライダルシェーブ"],
-    "ヨガ・ピラティス・加圧": ["ヨガ","ピラティス","加圧"],
-    "その他": []
-}
+PRICE_RE = re.compile(r"(?:¥|￥)?\s*([1-9]\d{2,5})\s*円")  # 3〜6桁
+MIN_PRICE, MAX_PRICE = 800, 100000
+NG_NEAR = ["割引","引き","OFF","オフ","+","追加","延長","オプション","学割","回数券","ポイント","g","Ｇ","ｇ"]
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_html(url: str) -> str:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
-        return r.text
-    except Exception:
-        return ""
+COUPON_KEYWORDS = ["クーポン","メニュー","コース","予約","特別","新規","再来","限定"]
 
-def normalize_genre(text: str) -> str:
-    t = str(text)
-    for g, kws in KEYWORDS_BY_GENRE.items():
-        if any(kw in t for kw in kws):
-            return g
-    return "その他"
+def _is_couponish_block(text: str) -> bool:
+    t = text[:800]
+    return any(k in t for k in COUPON_KEYWORDS)
+
+def _valid_price_candidates(text: str):
+    """テキストから妥当な価格候補だけ返す"""
+    cand = []
+    for m in PRICE_RE.finditer(text):
+        price = int(m.group(1))
+        if not (MIN_PRICE <= price <= MAX_PRICE):
+            continue
+        # 近傍にNG語がある候補は除外（±18文字）
+        s = max(0, m.start()-18); e = min(len(text), m.end()+18)
+        around = text[s:e]
+        if any(ng in around for ng in NG_NEAR):
+            continue
+        cand.append(price)
+    return cand
 
 def parse_coupons_from_html(html: str):
+    """
+    HTMLから (coupon_name, price, genre) を抽出。
+    - クーポンらしいブロックのみ対象
+    - 金額候補をフィルタして最小値を採用
+    """
+    out = []
+    if not html: return out
+    soup = BeautifulSoup(html, "html.parser")
+    # クーポンカードによく使われるタグを広めに
+    blocks = soup.find_all(["article","section","li","div"])
+    for b in blocks:
+        text = " ".join(b.stripped_strings)
+        if not _is_couponish_block(text):
+            continue
+        prices = _valid_price_candidates(text)
+        if not prices:
+            continue
+        price = min(prices)  # 最安クーポン
+        # タイトル推定
+        title = b.find(["h1","h2","h3","h4","strong","a"])
+        name = (title.get_text(strip=True) if title else text[:60]).strip()
+        # ジャンル推定（既存ロジック）
+        genre = normalize_genre(text)
+        out.append((name[:60], price, genre))
+    return out
+
     """HTMLから (coupon_name, price, genre) 候補を抽出（ルーズに広めに拾う）"""
     out = []
     if not html: return out
