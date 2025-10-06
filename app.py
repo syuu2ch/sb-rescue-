@@ -1,56 +1,42 @@
 # app.py
-# SBレスキュー（URL読み込み 版 / 単一ファイル完成）
-# 仕様要点：
-# - 入力：自店URL + 競合URL（最大20） ※CSV不要
-# - 取得：requests + BeautifulSoup(html.parser) ※lxml非依存
-# - 判定：競合がジャンル下限（設定/UI）を下回ったときのみアラート
+# SBレスキュー（URL読み込み／単一ファイル 完成版）
+# - 入力：自店URL + 競合URL（最大20）
+# - 取得：requests + BeautifulSoup(html.parser) ＊lxml不要
+# - 判定：競合がジャンル下限を下回った時のみアラート
 # - 優先：フェイシャル > 痩身 > ブライダル > 脱毛 > その他
-# - 提案：下限と競合価格の中間（100円単位丸め）
-# - 履歴：90日保持（CSV保存）、状態：未対応/対応済み/スヌーズ
+# - 提案：下限と競合の中間（100円単位丸め）
+# - 履歴：90日保持（CSV）、状態：未対応/対応済み/スヌーズ
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import re, os
+import os, re
 from datetime import datetime, timedelta, timezone
+
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 # ====== 定数 ======
 JST = timezone(timedelta(hours=9))
-GENRE_MASTER = ["フェイシャル","痩身","脱毛","ブライダル","バストケア","シェービング","ヨガ・ピラティス・加圧","その他"]
-PRIORITY_ORDER = {"フェイシャル":0,"痩身":1,"ブライダル":2,"脱毛":3,"その他":4,"バストケア":4,"シェービング":4,"ヨガ・ピラティス・加圧":4}
+GENRE_MASTER = [
+    "フェイシャル","痩身","脱毛","ブライダル",
+    "バストケア","シェービング","ヨガ・ピラティス・加圧","その他"
+]
+PRIORITY_ORDER = {
+    "フェイシャル":0,"痩身":1,"ブライダル":2,"脱毛":3,
+    "その他":4,"バストケア":4,"シェービング":4,"ヨガ・ピラティス・加圧":4
+}
 HISTORY_FILE = "alert_history.csv"
-HISTORY_COLS = ["date","salon_name","genre","coupon_name","price","lower_limit","diff","suggested_price","url","state"]
+HISTORY_COLS = [
+    "date","salon_name","genre","coupon_name","price",
+    "lower_limit","diff","suggested_price","url","state"
+]
 
-# ====== ページ設定 / スタイル ======
+# ====== ページ設定 / スタイル（リスくん：打合せ版） ======
 st.set_page_config(page_title="SBレスキュー", page_icon="💬", layout="wide")
 st.markdown("""
 <style>
-:root{--blue:#4A90E2;--light:#F9FBFD;--border:#D6E2F3;--text:#333;--shadow:rgba(0,0,0,.08);
---ok:#E6FFF1;--warn:#FFF5E5;--err:#FFECEC;}
-.block-container{padding-top:1rem;padding-bottom:2rem}
-.ris-row{display:flex;align-items:flex-end;gap:12px;margin:.25rem 0 1rem 0}
-.ris-icon{width:44px;height:44px;border-radius:50%;
- background:radial-gradient(circle,var(--blue) 0%,#B7D5FA 80%);
- display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;
- box-shadow:0 0 10px rgba(74,144,226,.5);animation:breath 3s ease-in-out infinite}
-@keyframes breath{0%{box-shadow:0 0 6px rgba(74,144,226,.5)}50%{box-shadow:0 0 14px rgba(74,144,226,.9)}100%{box-shadow:0 0 6px rgba(74,144,226,.5)}}
-.bubble{background:#fff;border:1px solid var(--border);border-radius:18px;padding:10px 14px;color:var(--text);
- box-shadow:0 3px 10px var(--shadow);max-width:520px;animation:fadeUp .4s ease}
-.bubble.ok{background:var(--ok)} .bubble.warn{background:var(--warn)} .bubble.err{background:var(--err)}
-@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-.kpi{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center;
- box-shadow:0 3px 10px var(--shadow)}
-.kpi h3{margin:.2rem 0 .4rem 0}
-.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;border:1px solid var(--border);background:#fff}
-hr{border:none;border-top:1px solid var(--border);margin:12px 0}
-</style>
-""", unsafe_allow_html=True)
-
-# --- STYLE: リスくん（打合せ版） ---
-st.markdown("""
-<style>
 :root{
-  --nut:#8B5E3C; --nut-light:#C49A6C; --border:#E7D8C9; --ok:#EFFFF6; --warn:#FFF6E6; --err:#FFECEC; --txt:#2b2b2b;
+  --nut:#8B5E3C; --nut-light:#C49A6C; --border:#E7D8C9;
+  --ok:#EFFFF6; --warn:#FFF6E6; --err:#FFECEC; --txt:#2b2b2b;
 }
 .block-container{padding-top:10px;padding-bottom:24px}
 .ris-wrap{position:fixed; right:18px; bottom:18px; z-index:9999;}
@@ -68,12 +54,16 @@ st.markdown("""
 }
 .ris-bubble.ok{background:var(--ok)} .ris-bubble.warn{background:var(--warn)} .ris-bubble.err{background:var(--err)}
 @keyframes fade{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
+.kpi{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center;
+ box-shadow:0 3px 10px rgba(0,0,0,.08)}
+.kpi h3{margin:.2rem 0 .4rem 0}
+.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;border:1px solid var(--border);background:#fff}
+hr{border:none;border-top:1px solid var(--border);margin:12px 0}
 </style>
 <div class="ris-wrap" id="ris-root"></div>
 """, unsafe_allow_html=True)
 
 RIS_ICON_HTML = "🐿️"
-
 def ris_says(msg: str, tone: str=""):
     tone_cls = {"ok":" ok", "warn":" warn", "err":" err"}.get(tone, "")
     st.markdown(f"""
@@ -81,36 +71,53 @@ def ris_says(msg: str, tone: str=""):
       <div class="ris-icon">{RIS_ICON_HTML}</div>
       <div class="ris-bubble{tone_cls}">{msg}</div>
     </div>
-    """, unsaf
+    """, unsafe_allow_html=True)
 
-
-# ====== 取得・解析 ======
+# ====== URL取得・解析 ======
 import requests
 from bs4 import BeautifulSoup
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (SB-Rescue/1.0)"}
-# --- PRICE PARSER 改良版 ---
-import re
-from bs4 import BeautifulSoup
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_html(url: str) -> str:
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (SB-Rescue/1.0)"}, timeout=15)
+        r.raise_for_status()
+        return r.text
+    except Exception:
+        return ""
 
+KEYWORDS_BY_GENRE = {
+    "フェイシャル": ["フェイシャル","小顔","毛穴","美肌","顔"],
+    "痩身": ["痩身","スリム","リンパ","デトックス","ボディ"],
+    "脱毛": ["脱毛"],
+    "ブライダル": ["ブライダル","花嫁"],
+    "バストケア": ["バスト","胸"],
+    "シェービング": ["シェービング","顔そり","ブライダルシェーブ"],
+    "ヨガ・ピラティス・加圧": ["ヨガ","ピラティス","加圧"],
+    "その他": []
+}
+def normalize_genre(text: str) -> str:
+    t = str(text)
+    for g, kws in KEYWORDS_BY_GENRE.items():
+        if any(kw in t for kw in kws):
+            return g
+    return "その他"
+
+# --- 価格パーサ（誤検出を抑制） ---
 PRICE_RE = re.compile(r"(?:¥|￥)?\s*([1-9]\d{2,5})\s*円")  # 3〜6桁
 MIN_PRICE, MAX_PRICE = 800, 100000
 NG_NEAR = ["割引","引き","OFF","オフ","+","追加","延長","オプション","学割","回数券","ポイント","g","Ｇ","ｇ"]
-
 COUPON_KEYWORDS = ["クーポン","メニュー","コース","予約","特別","新規","再来","限定"]
 
 def _is_couponish_block(text: str) -> bool:
-    t = text[:800]
-    return any(k in t for k in COUPON_KEYWORDS)
+    return any(k in text[:800] for k in COUPON_KEYWORDS)
 
 def _valid_price_candidates(text: str):
-    """テキストから妥当な価格候補だけ返す"""
     cand = []
     for m in PRICE_RE.finditer(text):
         price = int(m.group(1))
         if not (MIN_PRICE <= price <= MAX_PRICE):
             continue
-        # 近傍にNG語がある候補は除外（±18文字）
         s = max(0, m.start()-18); e = min(len(text), m.end()+18)
         around = text[s:e]
         if any(ng in around for ng in NG_NEAR):
@@ -119,15 +126,10 @@ def _valid_price_candidates(text: str):
     return cand
 
 def parse_coupons_from_html(html: str):
-    """
-    HTMLから (coupon_name, price, genre) を抽出。
-    - クーポンらしいブロックのみ対象
-    - 金額候補をフィルタして最小値を採用
-    """
+    """HTMLから (coupon_name, price, genre) を抽出。"""
     out = []
     if not html: return out
     soup = BeautifulSoup(html, "html.parser")
-    # クーポンカードによく使われるタグを広めに
     blocks = soup.find_all(["article","section","li","div"])
     for b in blocks:
         text = " ".join(b.stripped_strings)
@@ -136,43 +138,23 @@ def parse_coupons_from_html(html: str):
         prices = _valid_price_candidates(text)
         if not prices:
             continue
-        price = min(prices)  # 最安クーポン
-        # タイトル推定
+        price = min(prices)  # 最安値を代表値とする
         title = b.find(["h1","h2","h3","h4","strong","a"])
         name = (title.get_text(strip=True) if title else text[:60]).strip()
-        # ジャンル推定（既存ロジック）
         genre = normalize_genre(text)
         out.append((name[:60], price, genre))
-    return out
-
-    """HTMLから (coupon_name, price, genre) 候補を抽出（ルーズに広めに拾う）"""
-    out = []
-    if not html: return out
-    soup = BeautifulSoup(html, "html.parser")
-    blocks = soup.find_all(["section","article","div","li"])
-    for b in blocks:
-        text = " ".join(b.stripped_strings)[:600]
-        m = PRICE_PAT.search(text)
-        if not m: continue
-        price = int(m.group(1))
-        title_tag = b.find(["h1","h2","h3","h4","strong","a"])
-        coupon_name = title_tag.get_text(strip=True)[:60] if title_tag else text[:60]
-        genre = normalize_genre(text)
-        out.append((coupon_name, price, genre))
     return out
 
 def build_df_from_urls(self_name: str, self_url: str, comp_urls: list, genre_limits: dict) -> pd.DataFrame:
     rows = []
     # 自店
-    if self_url.strip():
+    if str(self_url).strip():
         html = fetch_html(self_url)
-        coupons = parse_coupons_from_html(html)
-        for (name, price, genre) in coupons:
-            lower = genre_limits.get(genre)
+        for (name, price, genre) in parse_coupons_from_html(html):
             rows.append({
                 "salon_name": self_name or "自店",
                 "genre": genre, "coupon_name": name, "price": price,
-                "lower_limit": lower if lower else np.nan,
+                "lower_limit": genre_limits.get(genre) if genre_limits.get(genre) else np.nan,
                 "url": self_url, "is_self": 1
             })
     # 競合
@@ -186,18 +168,15 @@ def build_df_from_urls(self_name: str, self_url: str, comp_urls: list, genre_lim
             if t and t.text: salon = t.text.strip()[:40]
         except: pass
         for (name, price, genre) in coupons:
-            lower = genre_limits.get(genre)
             rows.append({
                 "salon_name": salon,
                 "genre": genre, "coupon_name": name, "price": price,
-                "lower_limit": lower if lower else np.nan,
+                "lower_limit": genre_limits.get(genre) if genre_limits.get(genre) else np.nan,
                 "url": url, "is_self": 0
             })
     df = pd.DataFrame(rows, columns=["salon_name","genre","coupon_name","price","lower_limit","url","is_self"])
     if not df.empty:
-        # 同一サロン×ジャンルは最安の一件に代表化（ノイズ抑制）
-        df = (df.sort_values("price")
-                .groupby(["salon_name","genre"], as_index=False).first())
+        df = (df.sort_values("price").groupby(["salon_name","genre"], as_index=False).first())
     return df
 
 # ====== 下限設定 ======
@@ -205,7 +184,6 @@ if "limits" not in st.session_state:
     st.session_state["limits"] = {g: None for g in GENRE_MASTER}
 
 def apply_limits_to_df(df: pd.DataFrame):
-    """lower_limit未設定の行にサイドバー設定値を適用"""
     for g, v in st.session_state["limits"].items():
         if v is None: continue
         mask = (df["genre"]==g) & (df["lower_limit"].isna())
@@ -214,7 +192,6 @@ def apply_limits_to_df(df: pd.DataFrame):
 
 # ====== 判定・提案 ======
 def suggested_price(lower, comp):
-    # 提案価格 = (下限 + 競合) / 2 を100円単位丸め
     raw = (float(lower) + float(comp)) / 2.0
     return int(round(raw/100.0) * 100)
 
@@ -274,11 +251,14 @@ with st.sidebar:
     st.caption("※ 自店単体のアラートは出しません。競合が下限未満のときのみ通知します。")
 
 # ====== タブ ======
-tab_scan, tab_suggest, tab_hist, tab_summary, tab_guide = st.tabs(["🔍 スキャン（URL）","💡 提案","🗂 履歴","📈 サマリー","📘 使い方"])
+tab_scan, tab_suggest, tab_hist, tab_summary, tab_guide = st.tabs(
+    ["🔍 スキャン（URL）","💡 提案","🗂 履歴","📈 サマリー","📘 使い方"]
+)
 
 # ====== スキャン（URL） ======
 with tab_scan:
     st.markdown("#### 今日のスキャン（URLから自動取得）")
+
     with st.expander("① 自店の情報", expanded=True):
         c1, c2 = st.columns([2,3])
         with c1:
@@ -324,7 +304,7 @@ with tab_scan:
                     f"本日中に **{int(r['lower_limit']):,}→{int(r['suggested_price']):,}円** への調整をおすすめします。",
                     "warn"
                 )
-            if len(alerts)>3:
+            if len(alerts) > 3:
                 ris_says(f"他に {len(alerts)-3} 件あります。『提案』タブをご確認ください。", "warn")
 
             # 履歴保存
@@ -332,7 +312,10 @@ with tab_scan:
             save_rows = alerts.copy()
             save_rows["date"] = today
             save_rows["state"] = "未対応"
-            save_rows = save_rows[["date","salon_name","genre","coupon_name","price","lower_limit","diff","suggested_price","url","state"]]
+            save_rows = save_rows[[
+                "date","salon_name","genre","coupon_name","price",
+                "lower_limit","diff","suggested_price","url","state"
+            ]]
             _ = save_history(save_rows)
             st.success("検出結果を履歴に保存しました。")
 
@@ -346,10 +329,20 @@ with tab_suggest:
         top3 = alerts.head(3)
         for i, r in top3.iterrows():
             with st.container(border=True):
-                st.markdown(f"**🟥【{r['genre']}】 {r['salon_name']}** 　<span class='badge'>優先度:{int(r['score'])}</span>", unsafe_allow_html=True)
-                st.write(f"💴 競合価格：{int(r['price']):,}円　｜　下限：{int(r['lower_limit']):,}円　｜　差額：-{int(r['diff']):,}円（{r['diff_rate']*100:.1f}%）")
+                st.markdown(
+                    f"**🟥【{r['genre']}】 {r['salon_name']}** 　"
+                    f"<span class='badge'>優先度:{int(r['score'])}</span>",
+                    unsafe_allow_html=True
+                )
+                st.write(
+                    f"💴 競合価格：{int(r['price']):,}円　｜　下限：{int(r['lower_limit']):,}円　｜　"
+                    f"差額：-{int(r['diff']):,}円（{r['diff_rate']*100:.1f}%）"
+                )
                 st.write("📈 **影響**：このままでは比較段階で他店への流出が予測されます。")
-                st.write(f"💡 **ご提案**：本日中に、**{int(r['lower_limit']):,}円 → {int(r['suggested_price']):,}円** への再設定をご検討ください。")
+                st.write(
+                    f"💡 **ご提案**：本日中に、**{int(r['lower_limit']):,}円 → {int(r['suggested_price']):,}円** "
+                    "への再設定をご検討ください。"
+                )
                 if str(r.get("url","")).strip():
                     st.write(f"🔗 参考URL：{r['url']}")
                 c1, c2, _ = st.columns([1,1,5])
@@ -398,13 +391,28 @@ with tab_summary:
             last30 = hist[hist["date_dt"] >= (datetime.now(JST)-timedelta(days=30))]
             c1,c2,c3 = st.columns(3)
             with c1:
-                st.markdown(f"<div class='kpi'><h3>総アラート</h3><div style='font-size:1.6rem;'>{len(last30)}</div><div class='small'>過去30日</div></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='kpi'><h3>総アラート</h3>"
+                    f"<div style='font-size:1.6rem;'>{len(last30)}</div>"
+                    f"<div class='small'>過去30日</div></div>",
+                    unsafe_allow_html=True
+                )
             with c2:
                 rate = ((last30["state"]=="対応済み").sum()/len(last30)*100) if len(last30)>0 else 0
-                st.markdown(f"<div class='kpi'><h3>対応済み率</h3><div style='font-size:1.6rem;'>{rate:.0f}%</div><div class='small'>過去30日</div></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='kpi'><h3>対応済み率</h3>"
+                    f"<div style='font-size:1.6rem;'>{rate:.0f}%</div>"
+                    f"<div class='small'>過去30日</div></div>",
+                    unsafe_allow_html=True
+                )
             with c3:
                 avg = int(last30["diff"].mean() if len(last30)>0 else 0)
-                st.markdown(f"<div class='kpi'><h3>平均差額</h3><div style='font-size:1.6rem;'>{avg:,}円</div><div class='small'>過去30日</div></div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='kpi'><h3>平均差額</h3>"
+                    f"<div style='font-size:1.6rem;'>{avg:,}円</div>"
+                    f"<div class='small'>過去30日</div></div>",
+                    unsafe_allow_html=True
+                )
             st.markdown("##### ジャンル別アラート件数（過去30日）")
             agg = last30.groupby("genre")["coupon_name"].count().reset_index().rename(columns={"coupon_name":"count"})
             st.bar_chart(agg, x="genre", y="count", height=240)
@@ -445,11 +453,6 @@ with tab_guide:
 
 ---
 
-#### 💬 よくある質問
-- **URLは？** HPBのサロンTOPまたは**クーポン一覧**を推奨。  
-- **取得できない？** URLの打ち間違い／非公開設定／一時的な通信エラーの可能性。  
-- **履歴？** 直近 **90日** を保存（自動整理）。
-
-不明点があれば、右上「Share」からURLを共有してください。  
+困ったときは右上「Share」からURLを送ってください。  
 **今日の売上に直結する“価格の守り”は、SBレスキューにおまかせください。**
 """)
