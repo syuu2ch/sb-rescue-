@@ -1,12 +1,4 @@
-# app.py
-# SBレスキュー（URL読み込み／単一ファイル 完成版）
-# - 入力：自店URL + 競合URL（最大20）
-# - 取得：requests + BeautifulSoup(html.parser) ＊lxml不要
-# - 判定：競合がジャンル下限を下回った時のみアラート
-# - 優先：フェイシャル > 痩身 > ブライダル > 脱毛 > その他
-# - 提案：下限と競合の中間（100円単位丸め）
-# - 履歴：90日保持（CSV）、状態：未対応/対応済み/スヌーズ
-
+# app.py — SBレスキュー / ① ヘッダー・定数・スタイル＆リスくん
 import os, re
 from datetime import datetime, timedelta, timezone
 
@@ -72,15 +64,19 @@ def ris_says(msg: str, tone: str=""):
       <div class="ris-bubble{tone_cls}">{msg}</div>
     </div>
     """, unsafe_allow_html=True)
-
-# ====== URL取得・解析 ======
+# ============== ② URL取得・ジャンル判定・価格パーサ ==============
 import requests
 from bs4 import BeautifulSoup
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_html(url: str) -> str:
+    """URLからHTMLを取得（1時間キャッシュ）"""
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (SB-Rescue/1.0)"}, timeout=15)
+        r = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (SB-Rescue/1.0)"},
+            timeout=15
+        )
         r.raise_for_status()
         return r.text
     except Exception:
@@ -103,16 +99,19 @@ def normalize_genre(text: str) -> str:
             return g
     return "その他"
 
-# --- 価格パーサ（誤検出を抑制） ---
+# --- 価格パーサ（誤検出抑制版） ---
+import re
 PRICE_RE = re.compile(r"(?:¥|￥)?\s*([1-9]\d{2,5})\s*円")  # 3〜6桁
 MIN_PRICE, MAX_PRICE = 800, 100000
 NG_NEAR = ["割引","引き","OFF","オフ","+","追加","延長","オプション","学割","回数券","ポイント","g","Ｇ","ｇ"]
 COUPON_KEYWORDS = ["クーポン","メニュー","コース","予約","特別","新規","再来","限定"]
 
 def _is_couponish_block(text: str) -> bool:
+    """クーポン/メニューっぽいテキストかを判定"""
     return any(k in text[:800] for k in COUPON_KEYWORDS)
 
 def _valid_price_candidates(text: str):
+    """テキストから妥当な価格候補だけ抽出（近傍NG語や範囲でフィルタ）"""
     cand = []
     for m in PRICE_RE.finditer(text):
         price = int(m.group(1))
@@ -126,9 +125,10 @@ def _valid_price_candidates(text: str):
     return cand
 
 def parse_coupons_from_html(html: str):
-    """HTMLから (coupon_name, price, genre) を抽出。"""
+    """HTMLから (coupon_name, price, genre) の配列を返す"""
     out = []
-    if not html: return out
+    if not html:
+        return out
     soup = BeautifulSoup(html, "html.parser")
     blocks = soup.find_all(["article","section","li","div"])
     for b in blocks:
@@ -138,79 +138,115 @@ def parse_coupons_from_html(html: str):
         prices = _valid_price_candidates(text)
         if not prices:
             continue
-        price = min(prices)  # 最安値を代表値とする
+        price = min(prices)  # 最安を代表値
         title = b.find(["h1","h2","h3","h4","strong","a"])
         name = (title.get_text(strip=True) if title else text[:60]).strip()
         genre = normalize_genre(text)
         out.append((name[:60], price, genre))
     return out
-
+# ============== ③ DataFrame構築（URL→抽出→整形）＋下限適用 ==============
 def build_df_from_urls(self_name: str, self_url: str, comp_urls: list, genre_limits: dict) -> pd.DataFrame:
+    """自店＋競合URL群からDataFrameを構築"""
     rows = []
+
     # 自店
-    if str(self_url).strip():
+    if self_url.strip():
         html = fetch_html(self_url)
-        for (name, price, genre) in parse_coupons_from_html(html):
+        coupons = parse_coupons_from_html(html)
+        for (name, price, genre) in coupons:
+            lower = genre_limits.get(genre)
             rows.append({
                 "salon_name": self_name or "自店",
-                "genre": genre, "coupon_name": name, "price": price,
-                "lower_limit": genre_limits.get(genre) if genre_limits.get(genre) else np.nan,
-                "url": self_url, "is_self": 1
+                "genre": genre,
+                "coupon_name": name,
+                "price": price,
+                "lower_limit": lower if lower else np.nan,
+                "url": self_url,
+                "is_self": 1
             })
+
     # 競合
     for url in comp_urls:
-        if not str(url).strip(): continue
+        if not str(url).strip():
+            continue
         html = fetch_html(url)
         coupons = parse_coupons_from_html(html)
         salon = "競合"
         try:
             t = BeautifulSoup(html, "html.parser").title
-            if t and t.text: salon = t.text.strip()[:40]
-        except: pass
+            if t and t.text:
+                salon = t.text.strip()[:40]
+        except Exception:
+            pass
         for (name, price, genre) in coupons:
+            lower = genre_limits.get(genre)
             rows.append({
                 "salon_name": salon,
-                "genre": genre, "coupon_name": name, "price": price,
-                "lower_limit": genre_limits.get(genre) if genre_limits.get(genre) else np.nan,
-                "url": url, "is_self": 0
+                "genre": genre,
+                "coupon_name": name,
+                "price": price,
+                "lower_limit": lower if lower else np.nan,
+                "url": url,
+                "is_self": 0
             })
+
     df = pd.DataFrame(rows, columns=["salon_name","genre","coupon_name","price","lower_limit","url","is_self"])
     if not df.empty:
-        df = (df.sort_values("price").groupby(["salon_name","genre"], as_index=False).first())
+        # 同一サロン×ジャンルは最安1件に代表化
+        df = (df.sort_values("price")
+                .groupby(["salon_name","genre"], as_index=False)
+                .first())
     return df
+
 
 # ====== 下限設定 ======
 if "limits" not in st.session_state:
     st.session_state["limits"] = {g: None for g in GENRE_MASTER}
 
 def apply_limits_to_df(df: pd.DataFrame):
+    """lower_limit未設定の行にサイドバー設定値を適用"""
     for g, v in st.session_state["limits"].items():
-        if v is None: continue
-        mask = (df["genre"]==g) & (df["lower_limit"].isna())
+        if v is None:
+            continue
+        mask = (df["genre"] == g) & (df["lower_limit"].isna())
         df.loc[mask, "lower_limit"] = v
     return df
+# ============== ④ 判定・提案ロジック＋履歴I/O ==============
 
-# ====== 判定・提案 ======
 def suggested_price(lower, comp):
+    """提案価格 = (下限 + 競合) / 2 を100円単位で丸め"""
     raw = (float(lower) + float(comp)) / 2.0
-    return int(round(raw/100.0) * 100)
+    return int(round(raw / 100.0) * 100)
+
 
 def detect_alerts(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty: return pd.DataFrame()
+    """競合が下限未満になっているクーポンを検出"""
+    if df.empty:
+        return pd.DataFrame()
+
     x = df.copy()
-    x = x[(x["is_self"]!=1) & (~x["lower_limit"].isna())]
+    # 自店を除外し、下限設定があるものだけ抽出
+    x = x[(x["is_self"] != 1) & (~x["lower_limit"].isna())]
     x = x[x["price"] < x["lower_limit"]]
-    if x.empty: return pd.DataFrame()
+
+    if x.empty:
+        return pd.DataFrame()
+
+    # 差額・優先度スコアを算出
     x["diff"] = x["lower_limit"] - x["price"]
     x["diff_rate"] = x["diff"] / x["lower_limit"]
     x["prio"] = x["genre"].map(PRIORITY_ORDER).fillna(4)
-    x["score"] = (x["diff_rate"]*60) + ((4 - x["prio"])/4*40)
-    x["suggested_price"] = x.apply(lambda r: suggested_price(r["lower_limit"], r["price"]), axis=1)
+    x["score"] = (x["diff_rate"] * 60) + ((4 - x["prio"]) / 4 * 40)
+    x["suggested_price"] = x.apply(
+        lambda r: suggested_price(r["lower_limit"], r["price"]), axis=1
+    )
     x = x.sort_values(by=["score","diff"], ascending=[False, False]).reset_index(drop=True)
     return x
 
+
 # ====== 履歴 ======
-def load_history():
+def load_history() -> pd.DataFrame:
+    """90日以内の履歴を読み込み"""
     if not os.path.exists(HISTORY_FILE):
         return pd.DataFrame(columns=HISTORY_COLS)
     try:
@@ -219,21 +255,29 @@ def load_history():
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
-    except:
+    except Exception:
         return pd.DataFrame(columns=HISTORY_COLS)
 
-def save_history(rows: pd.DataFrame):
+
+def save_history(rows: pd.DataFrame) -> pd.DataFrame:
+    """履歴を保存（90日以上前を自動削除）"""
     hist = load_history()
-    if rows.empty: return hist
+    if rows.empty:
+        return hist
+
     rows = rows.drop_duplicates(subset=["date","salon_name","coupon_name","genre","price"])
     hist = pd.concat([hist, rows], ignore_index=True)
+
     try:
         hist["date_dt"] = pd.to_datetime(hist["date"])
         cutoff = datetime.now(JST).date() - timedelta(days=90)
         hist = hist[hist["date_dt"].dt.date >= cutoff].drop(columns=["date_dt"])
-    except: pass
+    except Exception:
+        pass
+
     hist.to_csv(HISTORY_FILE, index=False)
     return hist
+# ============== ⑤ UI（サイドバー／タブ：スキャン・提案・履歴・サマリー・使い方） ==============
 
 # ====== ヘッダー ======
 st.markdown("## 🩵 SBレスキュー（単一版 / URL読み込み）")
@@ -244,9 +288,11 @@ with st.sidebar:
     st.markdown("### ⚙️ 設定（ジャンル下限）")
     st.caption("未入力ジャンルは判定対象外。500円単位推奨。")
     for g in GENRE_MASTER:
-        v = st.number_input(f"{g} 下限（円）", min_value=0, max_value=100000, step=500,
-                            value=st.session_state["limits"][g] if st.session_state["limits"][g] else 0)
-        st.session_state["limits"][g] = None if v==0 else v
+        v = st.number_input(
+            f"{g} 下限（円）", min_value=0, max_value=100000, step=500,
+            value=st.session_state["limits"][g] if st.session_state["limits"][g] else 0
+        )
+        st.session_state["limits"][g] = None if v == 0 else v
     st.markdown("---")
     st.caption("※ 自店単体のアラートは出しません。競合が下限未満のときのみ通知します。")
 
@@ -300,7 +346,8 @@ with tab_scan:
             ris_says("競合の一部で下限未満が見つかりました。早めの調整をおすすめします。", "warn")
             for _, r in top3.iterrows():
                 ris_says(
-                    f"【{r['genre']}｜{r['salon_name']}】 競合価格：{int(r['price']):,}円 / 下限：{int(r['lower_limit']):,}円（差額 -{int(r['diff']):,}円）。"
+                    f"【{r['genre']}｜{r['salon_name']}】 競合価格：{int(r['price']):,}円 / "
+                    f"下限：{int(r['lower_limit']):,}円（差額 -{int(r['diff']):,}円）。"
                     f"本日中に **{int(r['lower_limit']):,}→{int(r['suggested_price']):,}円** への調整をおすすめします。",
                     "warn"
                 )
@@ -350,15 +397,25 @@ with tab_suggest:
                     if st.button("対応済みにする", key=f"done_{i}"):
                         hist = load_history()
                         today = datetime.now(JST).strftime("%Y-%m-%d")
-                        m = (hist["date"]==today)&(hist["salon_name"]==r["salon_name"])&(hist["coupon_name"]==r["coupon_name"])
-                        hist.loc[m,"state"]="対応済み"; hist.to_csv(HISTORY_FILE, index=False)
+                        m = (
+                            (hist["date"]==today) &
+                            (hist["salon_name"]==r["salon_name"]) &
+                            (hist["coupon_name"]==r["coupon_name"])
+                        )
+                        hist.loc[m,"state"]="対応済み"
+                        hist.to_csv(HISTORY_FILE, index=False)
                         st.success("対応済みにしました。")
                 with c2:
                     if st.button("明日へ回す", key=f"snooze_{i}"):
                         hist = load_history()
                         today = datetime.now(JST).strftime("%Y-%m-%d")
-                        m = (hist["date"]==today)&(hist["salon_name"]==r["salon_name"])&(hist["coupon_name"]==r["coupon_name"])
-                        hist.loc[m,"state"]="スヌーズ"; hist.to_csv(HISTORY_FILE, index=False)
+                        m = (
+                            (hist["date"]==today) &
+                            (hist["salon_name"]==r["salon_name"]) &
+                            (hist["coupon_name"]==r["coupon_name"])
+                        )
+                        hist.loc[m,"state"]="スヌーズ"
+                        hist.to_csv(HISTORY_FILE, index=False)
                         st.info("当日は非表示にします。翌日のスキャン時に再表示します。")
 
 # ====== 履歴 ======
@@ -369,14 +426,22 @@ with tab_hist:
         st.info("履歴はまだありません。スキャンを実行すると保存されます。")
     else:
         c1,c2,c3 = st.columns(3)
-        with c1: gsel = st.multiselect("ジャンル", GENRE_MASTER, default=GENRE_MASTER)
-        with c2: ssel = st.multiselect("状態", ["未対応","対応済み","スヌーズ"], default=["未対応","対応済み","スヌーズ"])
-        with c3: order = st.selectbox("並び順", ["新しい順","古い順","差額が大きい順"])
+        with c1:
+            gsel = st.multiselect("ジャンル", GENRE_MASTER, default=GENRE_MASTER)
+        with c2:
+            ssel = st.multiselect("状態", ["未対応","対応済み","スヌーズ"], default=["未対応","対応済み","スヌーズ"])
+        with c3:
+            order = st.selectbox("並び順", ["新しい順","古い順","差額が大きい順"])
+
         dfh = hist.copy()
         dfh = dfh[dfh["genre"].isin(gsel) & dfh["state"].isin(ssel)]
-        if order=="新しい順": dfh = dfh.sort_values("date", ascending=False)
-        elif order=="古い順": dfh = dfh.sort_values("date", ascending=True)
-        else: dfh = dfh.sort_values("diff", ascending=False)
+        if order=="新しい順":
+            dfh = dfh.sort_values("date", ascending=False)
+        elif order=="古い順":
+            dfh = dfh.sort_values("date", ascending=True)
+        else:
+            dfh = dfh.sort_values("diff", ascending=False)
+
         st.dataframe(dfh, use_container_width=True, hide_index=True)
 
 # ====== サマリー ======
@@ -388,7 +453,8 @@ with tab_summary:
     else:
         try:
             hist["date_dt"] = pd.to_datetime(hist["date"])
-            last30 = hist[hist["date_dt"] >= (datetime.now(JST)-timedelta(days=30))]
+            last30 = hist[hist["date_dt"] >= (datetime.now(JST) - timedelta(days=30))]
+
             c1,c2,c3 = st.columns(3)
             with c1:
                 st.markdown(
@@ -413,6 +479,7 @@ with tab_summary:
                     f"<div class='small'>過去30日</div></div>",
                     unsafe_allow_html=True
                 )
+
             st.markdown("##### ジャンル別アラート件数（過去30日）")
             agg = last30.groupby("genre")["coupon_name"].count().reset_index().rename(columns={"coupon_name":"count"})
             st.bar_chart(agg, x="genre", y="count", height=240)
@@ -442,7 +509,7 @@ with tab_guide:
    - オレンジ：下限割れあり（件数と概要を表示）
 3. **提案タブ** で上位3件の調整案を確認し、対応状況を記録します。  
    - 「対応済み」…今日の表示から除外  
-   - 「明日へ回す」…本日は非表示、翌日に再表示
+   - 「明日へ回す」…本日は非表示、翌日のスキャン時に再表示
 
 ---
 
