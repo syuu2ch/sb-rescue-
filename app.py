@@ -22,7 +22,7 @@ HISTORY_COLS = [
     "lower_limit","diff","suggested_price","url","state"
 ]
 
-# ===== リスくん（単一表示・まとめて表示） =====
+# ===== リスくん（単一表示・まとめて表示） ====
 # 位置も左下固定に変更（見切れ防止用に下部余白も確保）
 st.markdown("""
 <style>
