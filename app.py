@@ -22,48 +22,47 @@ HISTORY_COLS = [
     "lower_limit","diff","suggested_price","url","state"
 ]
 
-# ====== ページ設定 / スタイル（リスくん：打合せ版） ======
-st.set_page_config(page_title="SBレスキュー", page_icon="💬", layout="wide")
+# ===== リスくん（単一表示・まとめて表示） =====
+# 位置も左下固定に変更（見切れ防止用に下部余白も確保）
 st.markdown("""
 <style>
-:root{
-  --nut:#8B5E3C; --nut-light:#C49A6C; --border:#E7D8C9;
-  --ok:#EFFFF6; --warn:#FFF6E6; --err:#FFECEC; --txt:#2b2b2b;
-}
-.block-container{padding-top:10px;padding-bottom:24px}
-.ris-wrap{position:fixed; right:18px; bottom:18px; z-index:9999;}
-.ris-icon{
-  width:48px;height:48px;border-radius:50%;
+:root{ --nut:#8B5E3C; --nut-light:#C49A6C; --border:#E7D8C9; --ok:#EFFFF6; --warn:#FFF6E6; --err:#FFECEC; --txt:#2b2b2b; }
+.block-container{padding-bottom:140px;}  /* リスくんと重ならない余白を確保 */
+.ris-wrap{position:fixed; left:18px; bottom:18px; z-index:9999;}
+.ris-icon{width:48px;height:48px;border-radius:50%;
   background: radial-gradient(circle, var(--nut) 0%, var(--nut-light) 85%);
   display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;
-  box-shadow:0 8px 20px rgba(139,94,60,.35); animation:breath 3s ease-in-out infinite;
-}
+  box-shadow:0 8px 20px rgba(139,94,60,.35); animation:breath 3s ease-in-out infinite;}
 @keyframes breath{0%{transform:scale(1)}50%{transform:scale(1.04)}100%{transform:scale(1)}}
-.ris-bubble{
-  max-width:520px; background:#fff; border:1px solid var(--border); border-radius:16px;
-  box-shadow:0 10px 30px rgba(0,0,0,.08);
-  margin-top:8px; padding:10px 14px; color:var(--txt); animation:fade .25s ease;
-}
+.ris-bubble{max-width:560px;background:#fff;border:1px solid var(--border);border-radius:16px;
+  box-shadow:0 10px 30px rgba(0,0,0,.08);margin-top:8px;padding:10px 14px;color:var(--txt);animation:fade .25s ease;}
 .ris-bubble.ok{background:var(--ok)} .ris-bubble.warn{background:var(--warn)} .ris-bubble.err{background:var(--err)}
 @keyframes fade{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)}}
-.kpi{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-align:center;
- box-shadow:0 3px 10px rgba(0,0,0,.08)}
-.kpi h3{margin:.2rem 0 .4rem 0}
-.badge{display:inline-block;padding:.1rem .5rem;border-radius:999px;border:1px solid var(--border);background:#fff}
-hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+.ris-bubble ul{margin:6px 0 0 1.1em; padding:0;}
 </style>
 <div class="ris-wrap" id="ris-root"></div>
 """, unsafe_allow_html=True)
 
 RIS_ICON_HTML = "🐿️"
-def ris_says(msg: str, tone: str=""):
+
+def ris_reset():
+    st.session_state["ris_msgs"] = []
+
+def ris_add(msg: str):
+    if "ris_msgs" not in st.session_state: st.session_state["ris_msgs"] = []
+    st.session_state["ris_msgs"].append(msg)
+
+def ris_show(tone: str=""):
     tone_cls = {"ok":" ok", "warn":" warn", "err":" err"}.get(tone, "")
+    msgs = st.session_state.get("ris_msgs", [])
+    html = "".join(f"<div>{m}</div>" for m in msgs)
     st.markdown(f"""
     <div class="ris-wrap">
       <div class="ris-icon">{RIS_ICON_HTML}</div>
-      <div class="ris-bubble{tone_cls}">{msg}</div>
+      <div class="ris-bubble{tone_cls}">{html}</div>
     </div>
     """, unsafe_allow_html=True)
+
 # ============== ② URL取得・ジャンル判定・価格パーサ ==============
 import requests
 from bs4 import BeautifulSoup
@@ -337,34 +336,39 @@ with tab_scan:
         st.dataframe(df, use_container_width=True)
 
         alerts = detect_alerts(df)
-        st.session_state["last_alerts"] = alerts
+st.session_state["last_alerts"] = alerts
 
-        if alerts.empty:
-            ris_says("下限を下回る競合は見つかりませんでした。今日は安定しています。", "ok")
-        else:
-            top3 = alerts.head(3)
-            ris_says("競合の一部で下限未満が見つかりました。早めの調整をおすすめします。", "warn")
-            for _, r in top3.iterrows():
-                ris_says(
-                    f"【{r['genre']}｜{r['salon_name']}】 競合価格：{int(r['price']):,}円 / "
-                    f"下限：{int(r['lower_limit']):,}円（差額 -{int(r['diff']):,}円）。"
-                    f"本日中に **{int(r['lower_limit']):,}→{int(r['suggested_price']):,}円** への調整をおすすめします。",
-                    "warn"
-                )
-            if len(alerts) > 3:
-                ris_says(f"他に {len(alerts)-3} 件あります。『提案』タブをご確認ください。", "warn")
+ris_reset()
+if alerts.empty:
+    ris_add("下限を下回る競合は見つかりませんでした。今日は安定しています。")
+    ris_show("ok")
+else:
+    # 上位3件の要約を1つの吹き出しに集約
+    top3 = alerts.head(3)
+    ris_add("競合の一部で <b>下限未満</b> が見つかりました。早めの調整をおすすめします。")
+    items = []
+    for _, r in top3.iterrows():
+        items.append(
+            f"【{r['genre']}｜{r['salon_name']}】 競合：{int(r['price']):,}円 / 下限：{int(r['lower_limit']):,}円"
+            f"（差額 -{int(r['diff']):,}円） → 提案：<b>{int(r['suggested_price']):,}円</b>"
+        )
+    ris_add("<ul>" + "".join([f"<li>{x}</li>" for x in items]) + "</ul>")
+    if len(alerts) > 3:
+        ris_add(f"他に {len(alerts)-3} 件あります。『提案』タブで詳細を確認してください。")
+    ris_show("warn")
 
-            # 履歴保存
-            today = datetime.now(JST).strftime("%Y-%m-%d")
-            save_rows = alerts.copy()
-            save_rows["date"] = today
-            save_rows["state"] = "未対応"
-            save_rows = save_rows[[
-                "date","salon_name","genre","coupon_name","price",
-                "lower_limit","diff","suggested_price","url","state"
-            ]]
-            _ = save_history(save_rows)
-            st.success("検出結果を履歴に保存しました。")
+    # 履歴保存（既存どおり）
+    today = datetime.now(JST).strftime("%Y-%m-%d")
+    save_rows = alerts.copy()
+    save_rows["date"] = today
+    save_rows["state"] = "未対応"
+    save_rows = save_rows[[
+        "date","salon_name","genre","coupon_name","price",
+        "lower_limit","diff","suggested_price","url","state"
+    ]]
+    _ = save_history(save_rows)
+    st.success("検出結果を履歴に保存しました。")
+
 
 # ====== 提案 ======
 with tab_suggest:
