@@ -323,39 +323,66 @@ with tab_scan:
         st.caption("※ 近隣エリアのHPBサロンTOP/クーポン一覧URLを推奨。空欄は無視します。")
 
     st.markdown("---")
+        st.markdown("---")
     if st.button("🚀 スキャン開始（URLから取得）"):
-        ris_says("ページを読み込み中です。少しお待ちください。")
-        limits = {g: st.session_state["limits"].get(g) for g in GENRE_MASTER}
-        df = build_df_from_urls(self_name, self_url, st.session_state["comp_urls"], limits)
+        # まとめ表示リセット
+        ris_reset()
+        try:
+            # 1) 取得
+            limits = {g: st.session_state["limits"].get(g) for g in GENRE_MASTER}
+            df = build_df_from_urls(self_name, self_url, st.session_state["comp_urls"], limits)
 
-        if df.empty:
-            ris_says("有効なクーポン情報を読み取れませんでした。URLの公開状態や打ち間違いをご確認ください。", "err")
-            st.stop()
+            if df.empty:
+                ris_add("有効なクーポン情報を読み取れませんでした。URLの公開状態や打ち間違いをご確認ください。")
+                ris_show("err")
+                st.stop()
 
-        df = apply_limits_to_df(df)
-        st.dataframe(df, use_container_width=True)
+            # 2) 表示用テーブル
+            df = apply_limits_to_df(df)
+            st.dataframe(df, use_container_width=True)
 
-        alerts = detect_alerts(df)
-st.session_state["last_alerts"] = alerts
+            # 3) 検出（※これが無いと NameError になります）
+            alerts = detect_alerts(df)            # ← 重要：必ずこの行を残す
+            st.session_state["last_alerts"] = alerts
 
-ris_reset()
-if alerts.empty:
-    ris_add("下限を下回る競合は見つかりませんでした。今日は安定しています。")
-    ris_show("ok")
-else:
-    # 上位3件の要約を1つの吹き出しに集約
-    top3 = alerts.head(3)
-    ris_add("競合の一部で <b>下限未満</b> が見つかりました。早めの調整をおすすめします。")
-    items = []
-    for _, r in top3.iterrows():
-        items.append(
-            f"【{r['genre']}｜{r['salon_name']}】 競合：{int(r['price']):,}円 / 下限：{int(r['lower_limit']):,}円"
-            f"（差額 -{int(r['diff']):,}円） → 提案：<b>{int(r['suggested_price']):,}円</b>"
-        )
-    ris_add("<ul>" + "".join([f"<li>{x}</li>" for x in items]) + "</ul>")
-    if len(alerts) > 3:
-        ris_add(f"他に {len(alerts)-3} 件あります。『提案』タブで詳細を確認してください。")
-    ris_show("warn")
+            # 4) リスくん：1個にまとめて表示
+            if alerts.empty:
+                ris_add("下限を下回る競合は見つかりませんでした。今日は安定しています。")
+                ris_show("ok")
+            else:
+                top3 = alerts.head(3)
+                ris_add("競合の一部で <b>下限未満</b> が見つかりました。早めの調整をおすすめします。")
+
+                items = []
+                for _, r in top3.iterrows():
+                    items.append(
+                        f"【{r['genre']}｜{r['salon_name']}】 "
+                        f"競合：{int(r['price']):,}円 / 下限：{int(r['lower_limit']):,}円"
+                        f"（差額 -{int(r['diff']):,}円） → 提案：<b>{int(r['suggested_price']):,}円</b>"
+                    )
+                ris_add("<ul>" + "".join([f"<li>{x}</li>" for x in items]) + "</ul>")
+                if len(alerts) > 3:
+                    ris_add(f"他に {len(alerts)-3} 件あります。『提案』タブで詳細を確認してください。")
+                ris_show("warn")
+
+                # 5) 履歴保存
+                today = datetime.now(JST).strftime("%Y-%m-%d")
+                save_rows = alerts.copy()
+                save_rows["date"] = today
+                save_rows["state"] = "未対応"
+                save_rows = save_rows[
+                    ["date","salon_name","genre","coupon_name","price",
+                     "lower_limit","diff","suggested_price","url","state"]
+                ]
+                _ = save_history(save_rows)
+                st.success("検出結果を履歴に保存しました。")
+
+        except Exception as e:
+            # 想定外エラーも1個の吹き出しで通知
+            ris_add("スキャン中にエラーが発生しました。URLや公開状態をご確認ください。")
+            ris_add(f"<small>詳細: {type(e).__name__}</small>")
+            ris_show("err")
+
 
     # 履歴保存（既存どおり）
     today = datetime.now(JST).strftime("%Y-%m-%d")
