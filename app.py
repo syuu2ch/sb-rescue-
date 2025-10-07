@@ -323,7 +323,6 @@ with tab_scan:
         st.caption("※ 近隣エリアのHPBサロンTOP/クーポン一覧URLを推奨。空欄は無視します。")
 
     st.markdown("---")
-        st.markdown("---")
     if st.button("🚀 スキャン開始（URLから取得）"):
         # まとめ表示リセット
         ris_reset()
