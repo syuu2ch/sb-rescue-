@@ -8,12 +8,19 @@ import numpy as np
 import json, os, base64, uuid, io, re
 from datetime import datetime
 from PIL import Image, ImageFilter, ImageEnhance
+import requests as http_requests
 
 try:
     import anthropic
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
+
+try:
+    import replicate
+    HAS_REPLICATE = True
+except ImportError:
+    HAS_REPLICATE = False
 
 # ─── 定数 ───────────────────────────────────────────────────────────────
 DATA_DIR   = "skin_data"
@@ -65,7 +72,7 @@ def save_photo(cid: str, visit_num: int, raw: bytes) -> str:
     img.convert("RGB").save(path, "JPEG", quality=85)
     return path
 
-def load_photo(path: str) -> Image.Image | None:
+def load_photo(path: str):
     return Image.open(path) if path and os.path.exists(path) else None
 
 def img_to_b64(img: Image.Image) -> str:
@@ -73,45 +80,88 @@ def img_to_b64(img: Image.Image) -> str:
     img.convert("RGB").save(buf, "JPEG")
     return base64.b64encode(buf.getvalue()).decode()
 
-# ─── 改善シミュレーション ────────────────────────────────────────────────
+def img_to_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+# ─── PIL 改善シミュレーション（フォールバック） ──────────────────────────
 def simulate_improvement(img: Image.Image, level: int) -> Image.Image:
-    """
-    level 1 = 初回（原本）、level 2〜5 = 段階的改善シミュレーション
-    シミ・くすみを局所的に明るくし、スキンスムージングで肌質改善を表現
-    """
+    """level 1=原本 / 2〜5=段階的改善"""
     if level <= 1:
         return img.copy().convert("RGB")
-
-    strength = (level - 1) / 4.0  # 0.25 〜 1.0
-
+    strength = (level - 1) / 4.0
     arr = np.array(img.convert("RGB")).astype(np.float64)
-
-    # ── シミ低減：暗い点を周辺の明るさに近づける ──
-    blurred = np.array(
-        img.convert("RGB").filter(ImageFilter.GaussianBlur(radius=12))
-    ).astype(np.float64)
+    blurred = np.array(img.convert("RGB").filter(ImageFilter.GaussianBlur(radius=12))).astype(np.float64)
     diff = blurred - arr
-    mask = diff > 18  # 局所的に暗い部分（シミ候補）
+    mask = diff > 18
     arr[mask] += diff[mask] * min(strength * 0.8, 0.85)
-
     result = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
-
-    # ── 全体トーン調整 ──
     result = ImageEnhance.Brightness(result).enhance(1.0 + strength * 0.05)
     result = ImageEnhance.Color(result).enhance(1.0 + strength * 0.06)
     result = ImageEnhance.Sharpness(result).enhance(1.0 - strength * 0.15)
-
-    # ── スキンスムージング ──
     for _ in range(int(strength * 2)):
         result = result.filter(ImageFilter.SMOOTH)
-
     return result
 
-# ─── AI 肌分析（Claude Vision） ──────────────────────────────────────────
+# ─── Replicate AI 肌改善（メイン機能） ───────────────────────────────────
+def _get_replicate_token() -> str:
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        try:
+            token = st.secrets.get("REPLICATE_API_TOKEN", "")
+        except Exception:
+            pass
+    return token
+
+def enhance_skin_replicate(img: Image.Image, level: str = "標準") -> tuple:
+    """
+    Replicate GFPGAN で顔の肌を AI 改善する
+    Returns: (enhanced_image | None, error_message)
+    """
+    token = _get_replicate_token()
+    if not token:
+        return None, "REPLICATE_API_TOKEN が未設定です"
+    if not HAS_REPLICATE:
+        return None, "replicate ライブラリが未インストールです（pip install replicate）"
+
+    # 改善レベルに応じてパラメータを調整
+    scale_map = {"軽め": 1, "標準": 2, "しっかり": 2}
+    ver_map   = {"軽め": "v1.3", "標準": "v1.4", "しっかり": "v1.4"}
+    scale     = scale_map.get(level, 2)
+    version   = ver_map.get(level, "v1.4")
+
+    try:
+        client = replicate.Client(api_token=token)
+        buf = io.BytesIO(img_to_bytes(img))
+
+        output = client.run(
+            "tencentarc/gfpgan",
+            input={"img": buf, "version": version, "scale": scale}
+        )
+
+        # 出力は URL または file-like object
+        if isinstance(output, str) and output.startswith("http"):
+            resp = http_requests.get(output, timeout=60)
+            resp.raise_for_status()
+            return Image.open(io.BytesIO(resp.content)).convert("RGB"), ""
+        elif hasattr(output, "read"):
+            return Image.open(output).convert("RGB"), ""
+        else:
+            # イテラブルの場合（Replicate SDK v1+）
+            result_url = next(iter(output), None)
+            if result_url and isinstance(result_url, str):
+                resp = http_requests.get(result_url, timeout=60)
+                return Image.open(io.BytesIO(resp.content)).convert("RGB"), ""
+            return None, f"予期しない出力形式: {type(output)}"
+
+    except Exception as e:
+        return None, str(e)
+
+# ─── Claude Vision 肌分析 ────────────────────────────────────────────────
 def analyze_skin(img: Image.Image, visit_num: int, prev_analysis: str | None = None) -> dict:
     if not HAS_ANTHROPIC:
-        return {"error": "anthropicライブラリが未インストールです（pip install anthropic）"}
-
+        return {"error": "anthropicライブラリが未インストールです"}
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         try:
@@ -119,17 +169,13 @@ def analyze_skin(img: Image.Image, visit_num: int, prev_analysis: str | None = N
         except Exception:
             pass
     if not api_key:
-        return {"error": "ANTHROPIC_API_KEY が設定されていません"}
+        return {"error": "ANTHROPIC_API_KEY が未設定です"}
 
     client = anthropic.Anthropic(api_key=api_key)
-    b64 = img_to_b64(img)
     prev_block = f"\n\n【前回（第{visit_num-1}回）の分析結果】\n{prev_analysis}" if prev_analysis else ""
-
     prompt = f"""あなたは美容皮膚科・エステサロン専門の肌状態分析AIです。
 この写真は第{visit_num}回目の施術記録です。
-
-以下の項目を「改善度スコア（1=課題多い ／ 10=非常に良い状態）」で評価し、
-お客様にお渡しできる丁寧な文章で説明してください。{prev_block}
+以下の項目を「改善度スコア（1=課題多い／10=非常に良い状態）」で評価し、お客様にお渡しできる丁寧な文章で説明してください。{prev_block}
 
 【評価項目】
 1. シミ（数・大きさ・色の濃さ）
@@ -141,20 +187,17 @@ def analyze_skin(img: Image.Image, visit_num: int, prev_analysis: str | None = N
 
 {'【重要】前回の分析と比較して、改善した点と今後の課題を具体的に記述してください。' if prev_analysis else ''}
 
-説明文の最後に、必ず以下の形式でスコアをJSON出力してください：
+説明文の最後に必ず以下のJSON形式でスコアを出力してください：
 SCORES: {{"シミ": 数値, "シワ": 数値, "ほうれい線": 数値, "肌トーン": 数値, "毛穴": 数値, "総合": 数値}}"""
 
     try:
         msg = client.messages.create(
             model="claude-opus-4-7",
             max_tokens=1800,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                    {"type": "text", "text": prompt}
-                ]
-            }]
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img_to_b64(img)}},
+                {"type": "text", "text": prompt}
+            ]}]
         )
         text = msg.content[0].text
         scores = {}
@@ -170,21 +213,28 @@ SCORES: {{"シミ": 数値, "シワ": 数値, "ほうれい線": 数値, "肌ト
         return {"error": str(e)}
 
 # ─── スタイル ────────────────────────────────────────────────────────────
-st.set_page_config(page_title="肌変化プログレストラッカー", page_icon="💆", layout="wide")
+st.set_page_config(page_title="肌変化トラッカー", page_icon="💆", layout="wide")
 st.markdown("""
 <style>
-:root{--rose:#e84393;--pink:#f8a5c2;--cream:#fff9f5;--border:#f0dde8;--text:#3a3a3a;}
+:root{--rose:#e84393;--pink:#f8a5c2;--cream:#fff9f5;--border:#f0dde8;}
 .block-container{padding:1.5rem 2rem;max-width:1300px;}
 .section-hd{font-size:1.05rem;font-weight:bold;color:var(--rose);
   border-left:4px solid var(--rose);padding-left:.6rem;margin:1rem 0 .7rem;}
 .score-chip{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.8rem;
   font-weight:bold;background:#fce4ec;color:var(--rose);margin:2px;}
-.sim-label{text-align:center;font-size:.78rem;color:#888;margin-top:4px;}
+.ba-label{text-align:center;font-size:1rem;font-weight:bold;padding:.4rem;
+  border-radius:8px;margin-bottom:.5rem;}
+.ba-before{background:#f5f5f5;color:#555;}
+.ba-after{background:#fce4ec;color:var(--rose);}
+.consult-banner{background:linear-gradient(135deg,#e84393,#f8a5c2);
+  color:#fff;padding:1.2rem 1.5rem;border-radius:16px;margin-bottom:1.2rem;
+  box-shadow:0 4px 16px rgba(232,67,147,.3);}
 </style>
 """, unsafe_allow_html=True)
 
 # ─── セッション初期化 ─────────────────────────────────────────────────────
-for k, v in [("page", "home"), ("sel_cid", None), ("confirm_del", False)]:
+for k, v in [("page", "home"), ("sel_cid", None), ("confirm_del", False),
+             ("consult_before", None), ("consult_after", None), ("consult_level", "標準")]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -196,15 +246,171 @@ def go(page: str, cid: str | None = None):
     st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ページ：カウンセリングモード（メイン機能）
+# ═══════════════════════════════════════════════════════════════════════════
+def page_consultation():
+    # API 状態確認
+    has_replicate = bool(_get_replicate_token()) and HAS_REPLICATE
+    has_claude    = bool(os.environ.get("ANTHROPIC_API_KEY", "")) and HAS_ANTHROPIC
+
+    # ── ヘッダー ──
+    st.markdown("""
+    <div class="consult-banner">
+      <h2 style="margin:0;font-size:1.5rem;">✨ カウンセリングモード</h2>
+      <p style="margin:.4rem 0 0;opacity:.9;">お客様の写真を撮影してアップロードするだけで、施術後のビフォーアフターを即時に提示できます</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_back, col_status = st.columns([1, 6])
+    with col_back:
+        if st.button("← 戻る"):
+            st.session_state.consult_before = None
+            st.session_state.consult_after  = None
+            go("home")
+    with col_status:
+        if has_replicate:
+            st.success("🤖 Replicate AI 接続済み（高品質・リアルなビフォーアフター）")
+        else:
+            st.warning("⚠️ Replicate 未接続 → PILシミュレーションで代替します（REPLICATE_API_TOKEN を設定するとAI品質になります）")
+
+    st.markdown("---")
+
+    # ── STEP 1: 写真アップロード ──
+    st.markdown("### 📷 STEP 1　お客様の写真をアップロード")
+    uploaded = st.file_uploader("JPG / PNG（カウンセリング時に撮影した写真）",
+                                 type=["jpg", "jpeg", "png"], label_visibility="collapsed")
+
+    if not uploaded:
+        st.info("写真をアップロードすると、ビフォーアフターを自動生成します")
+        return
+
+    raw = uploaded.read()
+    original = Image.open(io.BytesIO(raw)).convert("RGB")
+
+    # ── STEP 2: 改善レベル ──
+    st.markdown("### 🎚️ STEP 2　改善レベルを選択")
+    level_options = {
+        "軽め（自然な仕上がり）": "軽め",
+        "標準（バランス重視）":   "標準",
+        "しっかり（最大改善）":   "しっかり",
+    }
+    level_label = st.select_slider("", options=list(level_options.keys()),
+                                    value="標準（バランス重視）", label_visibility="collapsed")
+    level_key = level_options[level_label]
+
+    # ── STEP 3: 生成ボタン ──
+    st.markdown("### 🔮 STEP 3　AIビフォーアフターを生成")
+    generate = st.button("✨ ビフォーアフターを生成する", type="primary", use_container_width=True)
+
+    if generate:
+        if has_replicate:
+            with st.spinner("🤖 AIが肌改善をシミュレーション中... 約15〜30秒お待ちください"):
+                enhanced, err = enhance_skin_replicate(original, level_key)
+            if enhanced is None:
+                st.warning(f"AI生成でエラーが発生したためPILモードで代替します。詳細: {err}")
+                pil_lv = {"軽め": 2, "標準": 3, "しっかり": 5}[level_key]
+                enhanced = simulate_improvement(original, pil_lv)
+        else:
+            with st.spinner("シミュレーション生成中..."):
+                pil_lv = {"軽め": 2, "標準": 3, "しっかり": 5}[level_key]
+                enhanced = simulate_improvement(original, pil_lv)
+
+        st.session_state.consult_before = original
+        st.session_state.consult_after  = enhanced
+        st.session_state.consult_level  = level_label
+
+    # ── STEP 4: ビフォーアフター表示 ──
+    if st.session_state.consult_before and st.session_state.consult_after:
+        st.markdown("---")
+        st.markdown("### 📊 STEP 4　お客様へのご提示")
+
+        col_b, col_a = st.columns(2)
+        with col_b:
+            st.markdown("<div class='ba-label ba-before'>📸 現在の状態</div>", unsafe_allow_html=True)
+            st.image(st.session_state.consult_before, use_container_width=True)
+        with col_a:
+            st.markdown("<div class='ba-label ba-after'>✨ 施術後イメージ</div>", unsafe_allow_html=True)
+            st.image(st.session_state.consult_after, use_container_width=True)
+
+        st.markdown(f"""
+        <div style="background:#fce4ec;border-radius:12px;padding:1rem 1.2rem;margin-top:.8rem;
+                    border-left:4px solid #e84393;">
+          <b style="color:#e84393;">💡 お客様へのご説明例</b><br>
+          「施術を重ねることで、シミ・シワ・ほうれい線がこのように改善していきます。
+          改善レベル「{st.session_state.consult_level}」での仕上がりイメージです。
+          個人差はありますが、多くのお客様でこのような変化を実感いただいています。」
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Claude AI 分析オプション
+        if has_claude:
+            st.markdown("---")
+            st.markdown("### 🧠 オプション：AI 肌状態分析レポートを生成")
+            st.caption("現在の写真をAIが詳しく分析します。お客様へのご説明に活用できます。")
+            if st.button("📋 AI分析レポートを生成する"):
+                with st.spinner("Claude AIが肌状態を分析中..."):
+                    result = analyze_skin(st.session_state.consult_before, 1)
+                if "error" in result:
+                    st.error(result["error"])
+                else:
+                    st.markdown("#### AI 肌分析レポート")
+                    st.write(result["analysis"])
+                    if result.get("scores"):
+                        sc = result["scores"]
+                        cols = st.columns(len(sc))
+                        for ci, (k, v) in enumerate(sc.items()):
+                            cols[ci].metric(k, f"{v}/10")
+
+        # 保存オプション
+        st.markdown("---")
+        st.markdown("### 💾 オプション：お客様の記録に保存")
+        customers = load_all()
+        save_cols = st.columns([3, 1])
+        with save_cols[0]:
+            if customers:
+                sel_id = st.selectbox(
+                    "保存先のお客様を選択",
+                    [c["id"] for c in customers],
+                    format_func=lambda x: next((c["name"] for c in customers if c["id"] == x), x)
+                )
+            else:
+                sel_id = None
+                st.info("保存するにはまずお客様を登録してください")
+        with save_cols[1]:
+            if sel_id and st.button("記録に保存", use_container_width=True):
+                c = get_customer(sel_id)
+                if c:
+                    vn = len(c.get("visits", [])) + 1
+                    path = save_photo(sel_id, vn, img_to_bytes(st.session_state.consult_before))
+                    c.setdefault("visits", []).append({
+                        "visit_num": vn,
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "treatment": "カウンセリング",
+                        "notes": f"カウンセリング時撮影（改善レベル：{st.session_state.consult_level}）",
+                        "photo_path": path,
+                        "analysis": None,
+                        "scores": {}
+                    })
+                    upsert_customer(c)
+                    st.success(f"✅ {c['name']} さんの記録に保存しました")
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ページ：ホーム（顧客一覧）
 # ═══════════════════════════════════════════════════════════════════════════
 def page_home():
     st.markdown("## 💆 肌変化プログレストラッカー")
     st.caption("お客様の肌の変化を記録・AIで分析・可視化するサロン専用ツール")
 
+    # カウンセリングモードを目立たせる
+    if st.button("✨ カウンセリングモードを開始する（ビフォーアフター即時生成）",
+                 type="primary", use_container_width=True):
+        go("consultation")
+
+    st.markdown("---")
+
     col_add, col_srch = st.columns([1, 4])
     with col_add:
-        if st.button("＋ お客様を追加", type="primary", use_container_width=True):
+        if st.button("＋ お客様を追加", use_container_width=True):
             go("add")
     with col_srch:
         keyword = st.text_input("🔍 名前で検索", placeholder="お客様名...", label_visibility="collapsed")
@@ -224,7 +430,6 @@ def page_home():
         visits = c.get("visits", [])
         with cols[i % 4]:
             with st.container(border=True):
-                # 最新写真サムネイル
                 latest_photo = None
                 for v in reversed(visits):
                     img = load_photo(v.get("photo_path"))
@@ -234,14 +439,12 @@ def page_home():
                 if latest_photo:
                     st.image(latest_photo, use_container_width=True)
                 else:
-                    st.markdown("🙎 写真なし", unsafe_allow_html=False)
-
+                    st.markdown("🙎 写真なし")
                 st.markdown(f"**{c['name']}** さん")
                 last = visits[-1]["date"] if visits else "施術前"
                 st.caption(f"施術 {len(visits)} 回 ／ 最終: {last}")
                 if c.get("concerns"):
                     st.caption("お悩み: " + "・".join(c["concerns"]))
-
                 if st.button("詳細を見る →", key=f"v_{c['id']}", use_container_width=True):
                     go("detail", c["id"])
 
@@ -250,7 +453,6 @@ def page_home():
 # ═══════════════════════════════════════════════════════════════════════════
 def page_add():
     st.markdown("## ＋ 新規お客様登録")
-
     with st.form("add_form", clear_on_submit=True):
         name = st.text_input("お名前 *", placeholder="山田 花子")
         c1, c2 = st.columns(2)
@@ -260,27 +462,20 @@ def page_add():
             skin_type = st.selectbox("肌タイプ", SKIN_TYPES)
         concerns = st.multiselect("お悩み（複数可）", CONCERNS)
         memo = st.text_area("メモ・特記事項", placeholder="アレルギー、注意事項など")
-
         c_sub, c_can = st.columns([1, 5])
         with c_sub:
             submitted = st.form_submit_button("登録", type="primary")
         with c_can:
             if st.form_submit_button("キャンセル"):
                 go("home")
-
     if submitted:
         if not name.strip():
             st.error("お名前を入力してください")
             return
         new_c = {
-            "id": str(uuid.uuid4()),
-            "name": name.strip(),
-            "age": int(age),
-            "skin_type": skin_type,
-            "concerns": concerns,
-            "memo": memo,
-            "created_at": datetime.now().strftime("%Y-%m-%d"),
-            "visits": []
+            "id": str(uuid.uuid4()), "name": name.strip(), "age": int(age),
+            "skin_type": skin_type, "concerns": concerns, "memo": memo,
+            "created_at": datetime.now().strftime("%Y-%m-%d"), "visits": []
         }
         upsert_customer(new_c)
         st.success(f"{name} さんを登録しました！")
@@ -296,7 +491,6 @@ def page_detail():
         go("home")
         return
 
-    # ── ヘッダー ──
     hcol1, hcol2, hcol3 = st.columns([1, 7, 1])
     with hcol1:
         if st.button("← 一覧"):
@@ -307,7 +501,6 @@ def page_detail():
         if st.button("✏️ 編集"):
             go("edit", cid)
 
-    # ── 基本情報 ──
     with st.expander("👤 基本情報", expanded=False):
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("年齢", f"{c.get('age','-')} 歳")
@@ -324,14 +517,11 @@ def page_detail():
         ["📅 タイムライン", "🔁 ビフォーアフター", "✨ 改善シミュレーション", "📷 写真を追加"]
     )
 
-    # ────────────────────────────────────────────────────────────────────
-    # タブ①：タイムライン
-    # ────────────────────────────────────────────────────────────────────
+    # ── タイムライン ──
     with tab_tl:
         if not visits:
             st.info("まだ記録がありません。「写真を追加」タブから登録してください。")
         else:
-            # スコア推移グラフ
             score_rows = []
             for v in visits:
                 s = v.get("scores", {})
@@ -342,10 +532,8 @@ def page_detail():
                 df = pd.DataFrame(score_rows).set_index("回数")
                 st.line_chart(df, height=220)
 
-            # 写真グリッド
             st.markdown("<div class='section-hd'>施術記録</div>", unsafe_allow_html=True)
-            n = len(visits)
-            grid_cols = st.columns(min(n, 5))
+            grid_cols = st.columns(min(len(visits), 5))
             for i, v in enumerate(visits):
                 with grid_cols[i % 5]:
                     img = load_photo(v.get("photo_path"))
@@ -363,16 +551,13 @@ def page_detail():
                         else:
                             st.caption("分析データなし")
 
-    # ────────────────────────────────────────────────────────────────────
-    # タブ②：ビフォーアフター
-    # ────────────────────────────────────────────────────────────────────
+    # ── ビフォーアフター ──
     with tab_ba:
         if len(visits) < 2:
             st.info("ビフォーアフター比較には 2 回以上の記録が必要です。")
         else:
             visit_labels = [f"第{v['visit_num']}回（{v['date']}）" for v in visits]
             bc1, bc2 = st.columns(2)
-
             with bc1:
                 st.markdown("**比較元（ビフォー）**")
                 b_idx = st.selectbox("", range(len(visits)), format_func=lambda x: visit_labels[x], key="b_sel", label_visibility="collapsed")
@@ -383,7 +568,6 @@ def page_detail():
                 if b_sc:
                     for k, val in b_sc.items():
                         st.markdown(f"<span class='score-chip'>{k}: {val}</span>", unsafe_allow_html=True)
-
             with bc2:
                 st.markdown("**比較先（アフター）**")
                 a_idx = st.selectbox("", range(len(visits)), index=len(visits)-1, format_func=lambda x: visit_labels[x], key="a_sel", label_visibility="collapsed")
@@ -394,24 +578,18 @@ def page_detail():
                 if a_sc:
                     for k, val in a_sc.items():
                         st.markdown(f"<span class='score-chip'>{k}: {val}</span>", unsafe_allow_html=True)
-
-            # スコア変化メトリクス
             if b_sc and a_sc:
                 st.markdown("<div class='section-hd'>スコア変化</div>", unsafe_allow_html=True)
                 common = [k for k in SCORE_KEYS if k in b_sc and k in a_sc]
                 if common:
                     met_cols = st.columns(len(common))
                     for ci, key in enumerate(common):
-                        delta = a_sc[key] - b_sc[key]
-                        met_cols[ci].metric(key, f"{a_sc[key]}/10", f"{delta:+}", delta_color="normal")
+                        met_cols[ci].metric(key, f"{a_sc[key]}/10", f"{a_sc[key]-b_sc[key]:+}", delta_color="normal")
 
-    # ────────────────────────────────────────────────────────────────────
-    # タブ③：改善シミュレーション
-    # ────────────────────────────────────────────────────────────────────
+    # ── 改善シミュレーション ──
     with tab_sim:
         st.markdown("### ✨ 施術改善シミュレーション")
-        st.caption("初回写真をベースに、施術回数に応じた肌改善をシミュレーションします。あくまで参考イメージです。")
-
+        st.caption("初回写真をベースに5段階のイメージを表示します。あくまで参考です。")
         sim_base = None
         if visits:
             for v in visits:
@@ -419,7 +597,6 @@ def page_detail():
                 if img:
                     sim_base = img
                     break
-
         if sim_base is None:
             st.info("シミュレーションには写真が 1 枚以上必要です。")
         else:
@@ -428,26 +605,20 @@ def page_detail():
             for lvl, (col, lbl) in enumerate(zip(sim_cols, sim_labels), start=1):
                 with col:
                     st.image(simulate_improvement(sim_base, lvl), use_container_width=True)
-                    st.markdown(f"<div class='sim-label'>{lbl}</div>", unsafe_allow_html=True)
+                    st.caption(lbl)
+            st.warning("⚠️ シミュレーション画像は参考イメージです。実際の効果は個人差があります。")
 
-            st.warning("⚠️ シミュレーション画像は参考イメージです。実際の効果は施術内容・個人差により異なります。")
-
-    # ────────────────────────────────────────────────────────────────────
-    # タブ④：写真アップロード
-    # ────────────────────────────────────────────────────────────────────
+    # ── 写真アップロード ──
     with tab_up:
         next_num = len(visits) + 1
         st.markdown(f"### 📷 第 {next_num} 回目の記録を追加")
-
         with st.form("upload_form"):
             visit_date = st.date_input("施術日", value=datetime.today())
             treatment  = st.text_input("施術内容", placeholder="フォトフェイシャル、シミ取りレーザーなど")
             notes      = st.text_area("メモ・所見", placeholder="お客様のコメント、スタッフ所見など")
             uploaded   = st.file_uploader("写真をアップロード *", type=["jpg", "jpeg", "png"])
-            run_ai     = st.checkbox(
-                "🤖 AI で肌状態を分析する（ANTHROPIC_API_KEY が必要）",
-                value=HAS_ANTHROPIC and bool(os.environ.get("ANTHROPIC_API_KEY"))
-            )
+            run_ai     = st.checkbox("🤖 AIで肌状態を分析する（ANTHROPIC_API_KEY が必要）",
+                                     value=HAS_ANTHROPIC and bool(os.environ.get("ANTHROPIC_API_KEY")))
             submit_btn = st.form_submit_button(f"第 {next_num} 回を記録する", type="primary")
 
         if submit_btn:
@@ -457,34 +628,25 @@ def page_detail():
                 with st.spinner("保存・分析中..."):
                     photo_path = save_photo(cid, next_num, uploaded.read())
                     img = load_photo(photo_path)
-
                     entry = {
-                        "visit_num":  next_num,
-                        "date":       visit_date.strftime("%Y-%m-%d"),
-                        "treatment":  treatment,
-                        "notes":      notes,
-                        "photo_path": photo_path,
-                        "analysis":   None,
-                        "scores":     {}
+                        "visit_num": next_num, "date": visit_date.strftime("%Y-%m-%d"),
+                        "treatment": treatment, "notes": notes,
+                        "photo_path": photo_path, "analysis": None, "scores": {}
                     }
-
                     if run_ai and img:
                         prev = visits[-1].get("analysis") if visits else None
                         result = analyze_skin(img, next_num, prev)
                         if "error" in result:
-                            st.warning(f"AI分析をスキップしました: {result['error']}")
+                            st.warning(f"AI分析をスキップ: {result['error']}")
                         else:
                             entry["analysis"] = result.get("analysis", "")
                             entry["scores"]   = result.get("scores", {})
-
                     c["visits"].append(entry)
                     upsert_customer(c)
 
                 st.success(f"✅ 第 {next_num} 回目の記録を保存しました！")
-
                 if img:
                     st.image(img, caption=f"第 {next_num} 回 / {visit_date}", width=350)
-
                 if entry.get("analysis"):
                     st.markdown("#### AI 肌分析レポート")
                     st.write(entry["analysis"])
@@ -502,9 +664,7 @@ def page_edit():
     if not c:
         go("home")
         return
-
     st.markdown(f"## ✏️ {c['name']} さんの情報を編集")
-
     with st.form("edit_form"):
         name = st.text_input("お名前", value=c.get("name", ""))
         e1, e2 = st.columns(2)
@@ -515,7 +675,6 @@ def page_edit():
             skin_type = st.selectbox("肌タイプ", SKIN_TYPES, index=si)
         concerns = st.multiselect("お悩み", CONCERNS, default=c.get("concerns", []))
         memo = st.text_area("メモ", value=c.get("memo", ""))
-
         s1, s2, s3 = st.columns([1, 1, 5])
         with s1:
             saved   = st.form_submit_button("保存", type="primary")
@@ -524,13 +683,11 @@ def page_edit():
         with s3:
             if st.form_submit_button("キャンセル"):
                 go("detail", cid)
-
     if saved:
         c.update({"name": name, "age": int(age), "skin_type": skin_type, "concerns": concerns, "memo": memo})
         upsert_customer(c)
         st.success("保存しました")
         go("detail", cid)
-
     if deleted:
         if st.session_state.confirm_del:
             delete_customer(cid)
@@ -544,8 +701,9 @@ def page_edit():
 # ルーター
 # ═══════════════════════════════════════════════════════════════════════════
 {
-    "home":   page_home,
-    "add":    page_add,
-    "detail": page_detail,
-    "edit":   page_edit,
+    "home":         page_home,
+    "add":          page_add,
+    "detail":       page_detail,
+    "edit":         page_edit,
+    "consultation": page_consultation,
 }.get(st.session_state.page, page_home)()
