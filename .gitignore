@@ -1,0 +1,4 @@
+skin_data/
+__pycache__/
+*.pyc
+alert_history.csv
