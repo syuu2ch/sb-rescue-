@@ -185,12 +185,13 @@ html, body {
 .companion-train {
   position: absolute;
   bottom: 4vh;
-  left: 24vw;
-  right: 2vw;
+  left: 20vw;
+  width: 60vw;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 0.5vw;
+  transition: left 1.2s ease;
 }
 
 .companion {
@@ -212,6 +213,47 @@ html, body {
   0% { transform: scale(0) translateY(20px); opacity: 0; }
   70% { transform: scale(1.2) translateY(-6px); opacity: 1; }
   100% { transform: scale(1) translateY(0); }
+}
+
+/* ---- treasure chest popup ---- */
+.chest-popup {
+  position: absolute;
+  bottom: 110%;
+  left: 50%;
+  transform: translateX(-50%) scale(0.6);
+  width: 5vw;
+  max-width: 70px;
+  opacity: 0;
+}
+
+.chest-popup .critter {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chest-popup.chest-open {
+  animation: chest-pop 0.65s ease forwards;
+}
+
+.chest-popup .chest-lid {
+  transform-origin: 15px 52px;
+}
+
+.chest-popup.chest-open .chest-lid {
+  animation: chest-lid-open 0.4s ease 0.15s forwards;
+}
+
+@keyframes chest-pop {
+  0% { opacity: 0; transform: translateX(-50%) scale(0.4); }
+  30% { opacity: 1; transform: translateX(-50%) scale(1.1); }
+  80% { opacity: 1; transform: translateX(-50%) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) scale(1) translateY(-10px); }
+}
+
+@keyframes chest-lid-open {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(-100deg); }
 }
 
 /* ---- family (papa/mama) ---- */

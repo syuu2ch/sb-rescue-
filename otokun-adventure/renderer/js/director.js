@@ -3,7 +3,8 @@
 
   const METER_MAX = 12;
   const METER_INCREMENT = 1;
-  const PRAISE_CHANCE = 0.12;
+  const STEPS_PER_CHEST = 3;
+  const PRAISE_CHANCE = 0.35;
   const HAPPENING_CHANCE = 0.05;
   const FAMILY_NUDGE_CHANCE = 0.08;
   const FACT_DURATION_MS = 3200;
@@ -16,6 +17,7 @@
   let totalCollected = 0;
   let phase = 'title';
   let usedWordsThisStage = [];
+  let stepsSinceChest = 0;
 
   function Stages() { return window.Otokun.Stages; }
   function UI() { return window.Otokun.UI; }
@@ -66,18 +68,15 @@
     }
     if (phase !== 'playing') return;
 
-    revealedCount += 1;
-    UI().revealLetter(currentWord, revealedCount);
-    Audio().playPon();
-    Speech().speak(currentWord[revealedCount - 1], { priority: 'letter' });
+    // Every press: おとくん takes a visible step forward, always and
+    // unconditionally, so mashing always feels responsive.
+    stepsSinceChest += 1;
     UI().bounceOtokun();
+    Audio().playPon();
 
     meterValue += METER_INCREMENT;
     UI().updateMeter(meterValue / METER_MAX);
 
-    if (Math.random() < PRAISE_CHANCE) {
-      Speech().speak(Content().pickPraiseLine(), { priority: 'praise' });
-    }
     if (Math.random() < HAPPENING_CHANCE) {
       UI().playHappeningAnimation();
       Speech().speak(Content().pickHappeningLine(), { priority: 'happening' });
@@ -86,12 +85,27 @@
       UI().nudgeFamily();
     }
 
-    const wordDone = revealedCount === currentWord.length;
-    const meterDone = meterValue >= METER_MAX;
+    // Every few steps: a treasure chest appears and reveals the next
+    // letter of the word おとくん is spelling out.
+    if (stepsSinceChest >= STEPS_PER_CHEST) {
+      stepsSinceChest = 0;
+      phase = 'chestOpening';
+      UI().openTreasureChest(() => {
+        revealedCount += 1;
+        UI().revealLetter(currentWord, revealedCount);
+        Speech().speak(currentWord[revealedCount - 1], { priority: 'letter' });
+        if (Math.random() < PRAISE_CHANCE) {
+          Speech().speak(Content().pickPraiseLine(), { priority: 'praise' });
+        }
 
-    if (wordDone) {
-      onWordComplete();
-    } else if (meterDone) {
+        if (revealedCount === currentWord.length) {
+          onWordComplete();
+        } else {
+          phase = 'playing';
+          if (meterValue >= METER_MAX) onStageMeterFull();
+        }
+      });
+    } else if (meterValue >= METER_MAX) {
       onStageMeterFull();
     }
   }

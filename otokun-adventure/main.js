@@ -1,20 +1,24 @@
-const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, globalShortcut } = require('electron');
 const path = require('path');
+
+const QUIT_ACCELERATOR = 'Control+Shift+Q';
 
 let mainWindow;
 let isQuitting = false;
 
 Menu.setApplicationMenu(null);
 
+function quitGame() {
+  isQuitting = true;
+  app.quit();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    kiosk: true,
     fullscreen: true,
     frame: false,
-    alwaysOnTop: true,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -41,14 +45,19 @@ app.on('before-quit', (e) => {
   if (!isQuitting) e.preventDefault();
 });
 
-ipcMain.on('secret-quit', () => {
-  isQuitting = true;
-  app.quit();
+app.whenReady().then(() => {
+  createWindow();
+  // Registered as a native OS-level accelerator (not tracked via renderer
+  // keydown events), so it works regardless of window focus/fullscreen
+  // state and isn't affected by macOS's dead-key accent composition.
+  globalShortcut.register(QUIT_ACCELERATOR, quitGame);
 });
 
-app.whenReady().then(createWindow);
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
 
 app.on('window-all-closed', () => {
   // Intentionally a no-op: this toy app should never quit on its own,
-  // only via the secret-quit IPC path above.
+  // only via the global quit shortcut above.
 });

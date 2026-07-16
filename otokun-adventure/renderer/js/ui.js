@@ -51,8 +51,14 @@
   }
 
   function updateMeter(fraction) {
-    const bar = el.meterBar();
-    bar.style.width = `${Math.min(1, Math.max(0, fraction)) * 100}%`;
+    const clamped = Math.min(1, Math.max(0, fraction));
+    el.meterBar().style.width = `${clamped * 100}%`;
+
+    // Reuse the same progress fraction to walk おとくん (and his companions
+    // trailing behind him) visibly across the stage as input comes in.
+    const travel = clamped * 55;
+    el.otokunLayer().style.left = `${8 + travel}vw`;
+    el.companionTrain().style.left = `${20 + travel}vw`;
   }
 
   function bounceOtokun() {
@@ -60,6 +66,21 @@
     layer.classList.remove('pose-bounce');
     void layer.offsetWidth;
     layer.classList.add('pose-bounce');
+  }
+
+  function openTreasureChest(onDone) {
+    const layer = el.otokunLayer();
+    const chestEl = document.createElement('div');
+    chestEl.className = 'chest-popup';
+    chestEl.innerHTML = Characters().renderChest();
+    layer.appendChild(chestEl);
+    void chestEl.offsetWidth;
+    chestEl.classList.add('chest-open');
+    window.Otokun.Audio.playChestOpen();
+    setTimeout(() => {
+      chestEl.remove();
+      if (onDone) onDone();
+    }, 650);
   }
 
   function celebrateWordComplete(animalName, word, onDone) {
@@ -205,6 +226,7 @@
     revealLetter,
     updateMeter,
     bounceOtokun,
+    openTreasureChest,
     celebrateWordComplete,
     addCompanion,
     renderCompanionTrain,

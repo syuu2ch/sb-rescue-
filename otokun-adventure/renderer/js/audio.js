@@ -49,5 +49,21 @@
     });
   }
 
-  window.Otokun.Audio = { playPon, playChime };
+  function playChestOpen() {
+    const audioCtx = getCtx();
+    const start = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(300, start);
+    osc.frequency.exponentialRampToValueAtTime(700, start + 0.25);
+    gain.gain.setValueAtTime(0.001, start);
+    gain.gain.linearRampToValueAtTime(0.18, start + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(start);
+    osc.stop(start + 0.32);
+  }
+
+  window.Otokun.Audio = { playPon, playChime, playChestOpen };
 })();

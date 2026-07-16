@@ -199,12 +199,27 @@
     return fn();
   }
 
+  // ---- 宝箱 ----
+  function renderChest() {
+    const inner = `
+      <rect x="15" y="52" width="70" height="34" rx="6" fill="#8B5E3C"/>
+      <rect x="15" y="52" width="70" height="9" fill="#5B3A29"/>
+      <g class="chest-lid">
+        <path d="M 15 52 Q 50 20 85 52 Z" fill="#A9764F"/>
+        <rect x="46" y="40" width="8" height="14" rx="2" fill="#FFD93D"/>
+      </g>
+      <circle cx="50" cy="60" r="5" fill="#FFD93D"/>
+    `;
+    return svgWrap(inner, 'chest');
+  }
+
   window.Otokun = window.Otokun || {};
   window.Otokun.Characters = {
     renderOtokun,
     renderPapa,
     renderMama,
     renderAnimal,
+    renderChest,
     knownAnimals: () => Object.keys(ANIMALS),
   };
 })();
