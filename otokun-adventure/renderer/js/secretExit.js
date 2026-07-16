@@ -1,7 +1,11 @@
 (function () {
   window.Otokun = window.Otokun || {};
 
-  const SEQ = ['e', 'n', 'd'];
+  // Matched against e.code (physical key position), not e.key: on macOS,
+  // holding Option turns E/N/U/I into dead-key accent modifiers, so e.key
+  // stops being a plain letter while Option is held. e.code is layout- and
+  // modifier-independent, so it still reports 'KeyE'/'KeyN'/'KeyD' correctly.
+  const SEQ = ['KeyE', 'KeyN', 'KeyD'];
   let optionHeld = false;
   let seqIndex = 0;
   let armed = false;
@@ -21,7 +25,7 @@
       }
       if (!optionHeld) return;
 
-      const k = (e.key || '').toLowerCase();
+      const k = e.code;
       if (k === SEQ[seqIndex]) {
         seqIndex += 1;
         if (seqIndex === SEQ.length) armed = true;
