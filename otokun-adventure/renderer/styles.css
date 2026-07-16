@@ -1,0 +1,400 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "Hiragino Maru Gothic ProN", "Hiragino Sans", sans-serif;
+  cursor: default;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---- stage backgrounds ---- */
+.stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  transition: background 0.6s ease;
+  overflow: hidden;
+}
+
+.stage-meadow { background: linear-gradient(to bottom, #8FD3F4 0%, #C4F5C0 55%, #7CC576 100%); }
+.stage-forest { background: linear-gradient(to bottom, #A8D8B9 0%, #4F7A5B 60%, #2E4F37 100%); }
+.stage-beach  { background: linear-gradient(to bottom, #9BE1F2 0%, #FDEFB2 55%, #F2D48B 100%); }
+.stage-snow   { background: linear-gradient(to bottom, #D6E9FA 0%, #FFFFFF 60%, #C9DCEE 100%); }
+.stage-night  { background: linear-gradient(to bottom, #14213D 0%, #2A2F5B 55%, #3E3B6B 100%); }
+.stage-home   { background: linear-gradient(to bottom, #FCEBD4 0%, #F6D9AE 60%, #E8C08A 100%); }
+
+/* ---- title screen ---- */
+.title-screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 40%, #FFE9A8, #FFB84C 70%, #F2711A 100%);
+  text-align: center;
+}
+
+.title-text {
+  font-size: 6vw;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 6px 0 rgba(0,0,0,0.15), 0 0 30px rgba(255,255,255,0.6);
+  animation: title-pulse 1.6s ease-in-out infinite;
+}
+
+.title-hint {
+  margin-top: 2rem;
+  font-size: 1.6vw;
+  color: #fff;
+  opacity: 0.85;
+}
+
+@keyframes title-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+/* ---- game screen layers ---- */
+.game-screen {
+  position: absolute;
+  inset: 0;
+}
+
+#meter-bar-wrap {
+  position: absolute;
+  top: 3vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 40vw;
+  height: 2vh;
+  background: rgba(255,255,255,0.4);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.15);
+}
+
+#meter-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #FFD93D, #FF6B6B);
+  transition: width 0.35s ease;
+}
+
+.word-slots {
+  position: absolute;
+  top: 8vh;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 1.2vw;
+}
+
+.letter-slot {
+  width: 6vw;
+  height: 6vw;
+  max-width: 90px;
+  max-height: 90px;
+  background: rgba(255,255,255,0.85);
+  border: 3px solid rgba(0,0,0,0.15);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 3.2vw;
+  font-weight: 900;
+  color: #333;
+}
+
+.letter-slot.pop {
+  animation: letter-pop 0.4s ease;
+}
+
+@keyframes letter-pop {
+  0% { transform: scale(0.3); opacity: 0; }
+  60% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+/* ---- otokun ---- */
+.otokun-layer {
+  position: absolute;
+  bottom: 4vh;
+  left: 8vw;
+  width: 14vw;
+  max-width: 200px;
+  transition: left 1.2s ease;
+}
+
+.otokun-layer .critter {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.otokun-layer.pose-bounce {
+  animation: otokun-bounce 0.4s ease;
+}
+
+.otokun-layer.pose-run {
+  animation: otokun-run 1.2s ease;
+}
+
+@keyframes otokun-bounce {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-16px); }
+  100% { transform: translateY(0); }
+}
+
+@keyframes otokun-run {
+  0% { transform: translateX(0) rotate(0deg); }
+  25% { transform: translateX(10vw) rotate(-4deg); }
+  50% { transform: translateX(20vw) rotate(4deg); }
+  75% { transform: translateX(10vw) rotate(-4deg); }
+  100% { transform: translateX(0) rotate(0deg); }
+}
+
+.otokun-layer .arm {
+  transform-origin: top center;
+}
+
+.otokun-layer.pose-bounce .arm-left { animation: arm-swing-left 0.4s ease; }
+.otokun-layer.pose-bounce .arm-right { animation: arm-swing-right 0.4s ease; }
+
+@keyframes arm-swing-left {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-25deg); }
+}
+@keyframes arm-swing-right {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(25deg); }
+}
+
+/* ---- companion train ---- */
+.companion-train {
+  position: absolute;
+  bottom: 4vh;
+  left: 24vw;
+  right: 2vw;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5vw;
+}
+
+.companion {
+  width: 6.5vw;
+  max-width: 90px;
+}
+
+.companion .critter {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.companion.pop-in {
+  animation: companion-pop 0.5s ease;
+}
+
+@keyframes companion-pop {
+  0% { transform: scale(0) translateY(20px); opacity: 0; }
+  70% { transform: scale(1.2) translateY(-6px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); }
+}
+
+/* ---- family (papa/mama) ---- */
+.family-layer {
+  position: absolute;
+  top: 6vh;
+  right: 4vw;
+  display: flex;
+  gap: 1.5vw;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+}
+
+.family-layer.show {
+  opacity: 1;
+}
+
+.family-member {
+  width: 10vw;
+  max-width: 140px;
+}
+
+.family-member .critter {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.family-member.wave .arm-left,
+.family-member.wave .arm-right {
+  animation: family-wave 0.9s ease 2;
+  transform-origin: top center;
+}
+
+@keyframes family-wave {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-35deg); }
+}
+
+/* ---- spotlight (word complete celebration) ---- */
+.spotlight {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.spotlight.show {
+  opacity: 1;
+  background: rgba(255,255,255,0.35);
+}
+
+.spotlight-animal {
+  width: 22vw;
+  max-width: 320px;
+  filter: drop-shadow(0 10px 20px rgba(0,0,0,0.25));
+}
+
+.spotlight.show .spotlight-animal {
+  animation: spotlight-in 0.6s ease;
+}
+
+@keyframes spotlight-in {
+  0% { transform: scale(0.2) rotate(-10deg); opacity: 0; }
+  60% { transform: scale(1.15) rotate(4deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+.spotlight-word {
+  margin-top: 1rem;
+  font-size: 3vw;
+  font-weight: 900;
+  color: #333;
+  background: rgba(255,255,255,0.9);
+  padding: 0.3em 0.8em;
+  border-radius: 999px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* ---- happening gag animation ---- */
+.happening {
+  animation: happening-wobble 0.6s ease;
+}
+
+@keyframes happening-wobble {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  20% { transform: rotate(-12deg) translateY(-4px); }
+  40% { transform: rotate(10deg); }
+  60% { transform: rotate(-8deg); }
+  80% { transform: rotate(6deg); }
+}
+
+/* ---- characteristics ("とくちょうタイム") fact panel ---- */
+.fact-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3vw;
+  background: rgba(20, 20, 40, 0.45);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+.fact-panel.show {
+  opacity: 1;
+}
+
+.fact-slot {
+  width: 18vw;
+  max-width: 260px;
+  text-align: center;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.fact-slot.dim {
+  opacity: 0.35;
+  transform: scale(0.9);
+}
+
+.fact-slot.active {
+  opacity: 1;
+  transform: scale(1.08);
+}
+
+.fact-critter .critter {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.fact-text {
+  margin-top: 0.8rem;
+  font-size: 1.4vw;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0,0,0,0.35);
+  border-radius: 12px;
+  padding: 0.5em 0.7em;
+  min-height: 1.4em;
+}
+
+.fact-slot.trait-wiggle .ears,
+.fact-slot.trait-wiggle .tail,
+.fact-slot.trait-wiggle .wing,
+.fact-slot.trait-wiggle .legs {
+  animation: trait-wiggle 0.6s ease-in-out 2;
+  transform-origin: center;
+}
+
+@keyframes trait-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(10deg); }
+}
+
+/* ---- stage transition celebration ---- */
+.transition-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  background: radial-gradient(circle, rgba(255,255,255,0.9), rgba(255,214,102,0.6) 60%, rgba(255,255,255,0) 100%);
+  transition: opacity 0.4s ease;
+}
+
+.transition-overlay.show {
+  opacity: 1;
+  animation: transition-flash 1.8s ease;
+}
+
+@keyframes transition-flash {
+  0% { opacity: 0; transform: scale(0.8); }
+  30% { opacity: 1; transform: scale(1.05); }
+  80% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; }
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
+<title>おとくんのぼうけん</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="stage" class="stage stage-meadow">
+
+    <div id="title-screen" class="title-screen">
+      <div class="title-text">おとくんの<br/>ぼうけん！！</div>
+      <div class="title-hint">なにかキーを　おしてね</div>
+    </div>
+
+    <div id="game-screen" class="game-screen hidden">
+      <div id="meter-bar-wrap"><div id="meter-bar"></div></div>
+
+      <div id="word-slots" class="word-slots"></div>
+
+      <div id="family-layer" class="family-layer"></div>
+
+      <div id="companion-train" class="companion-train"></div>
+
+      <div id="otokun-layer" class="otokun-layer"></div>
+
+      <div id="spotlight" class="spotlight hidden">
+        <div id="spotlight-animal" class="spotlight-animal"></div>
+        <div id="spotlight-word" class="spotlight-word"></div>
+      </div>
+
+      <div id="fact-panel" class="fact-panel hidden"></div>
+
+      <div id="transition-overlay" class="transition-overlay hidden"></div>
+    </div>
+
+  </div>
+
+  <script src="js/content.js"></script>
+  <script src="js/stages.js"></script>
+  <script src="js/characters.js"></script>
+  <script src="js/speech.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/director.js"></script>
+  <script src="js/secretExit.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

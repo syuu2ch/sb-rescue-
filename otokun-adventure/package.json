@@ -1,0 +1,13 @@
+{
+  "name": "otokun-adventure",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A toddler keyboard-mashing adventure game for Otokun",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
